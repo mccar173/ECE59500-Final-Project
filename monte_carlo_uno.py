@@ -18,7 +18,7 @@ class Uno:
         random.shuffle(self.deck)
 
         self.hands = [
-            [self.deck.pop() for _ in range(5)]
+            [self.deck.pop() for _ in range(6)]
             for _ in range(2)
         ]
 
@@ -75,7 +75,6 @@ class MonteCarloAgent:
         return random.choice(best_actions)
 
     def update(self, episode, final_reward):
-        # First-visit Monte Carlo
         G = final_reward
         returns = []
 
@@ -84,6 +83,7 @@ class MonteCarloAgent:
             G *= self.gamma
 
         visited = set()
+        q_changes = []
 
         for state, action, G in reversed(returns):
             key = (state, action)
@@ -93,10 +93,16 @@ class MonteCarloAgent:
 
             visited.add(key)
 
+            old_q = self.Q[key]
+
             self.N[key] += 1
             self.Q[key] += (
                 G - self.Q[key]
             ) / self.N[key]
+
+            q_changes.append(abs(self.Q[key] - old_q))
+
+        return sum(q_changes) / len(q_changes) if q_changes else 0
 
 
 def get_state(game):
@@ -126,14 +132,22 @@ def play_game(game, agent, max_turns=200):
 
         if done:
             reward = 1 if winner == 0 else -1
-            agent.update(episode, reward)
-            return winner
+            q_change = agent.update(episode, reward)
+            return winner, q_change
 
-    return None
+    return None, 0
+
+
+import time
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 def main():
-    num_games = 10000
+    num_games = 30000
+    window = 500
+    tolerance = 0.02
+    patience = 5
 
     game = Uno()
     agent = MonteCarloAgent(
@@ -145,38 +159,143 @@ def main():
     player2_wins = 0
     draws = 0
 
+    win_history = []
+    q_change_history = []
+
+    win_rates = []
+    q_changes = []
+    episodes = []
+
+    convergence_episode = None
+    stable_count = 0
+
+    start_time = time.perf_counter()
+
     print("Training Monte Carlo UNO Agent.")
 
     for i in range(num_games):
-        winner = play_game(game, agent)
+        winner, q_change = play_game(game, agent)
 
         if winner == 0:
             player1_wins += 1
+            win_history.append(1)
         elif winner == 1:
             player2_wins += 1
+            win_history.append(0)
         else:
             draws += 1
+            win_history.append(0)
 
-        if (i + 1) % 1000 == 0:
-            print(f"\nGames Played: {i + 1}")
-            print(f"Player 1 Wins: {player1_wins}")
-            print(f"Player 2 Wins: {player2_wins}")
-            print(f"Draws: {draws}")
-            print(
-                f"Player 1 Win Rate: "
-                f"{player1_wins / (i + 1):.2%}"
+        q_change_history.append(q_change)
+
+        if (i + 1) % window == 0:
+
+            recent_win_rate = np.mean(
+                win_history[-window:]
             )
+
+            recent_q_change = np.mean(
+                q_change_history[-window:]
+            )
+
+            win_rates.append(recent_win_rate)
+            q_changes.append(recent_q_change)
+            episodes.append(i + 1)
+
+            # Check convergence using win rate
+            if len(win_rates) >= 2:
+                difference = abs(
+                    win_rates[-1] - win_rates[-2]
+                )
+
+                if difference < tolerance:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+
+                if (
+                    stable_count >= patience
+                    and convergence_episode is None
+                ):
+                    convergence_episode = i + 1
+
+            print(
+                f"Episode {i + 1}: "
+                f"Win Rate = {recent_win_rate:.3f}, "
+                f"Q Change = {recent_q_change:.6f}"
+            )
+
+    elapsed_time = time.perf_counter() - start_time
 
     print("\nTraining Complete!")
     print(f"Total Games: {num_games}")
     print(f"Player 1 Wins: {player1_wins}")
     print(f"Player 2 Wins: {player2_wins}")
     print(f"Draws: {draws}")
+
     print(
-        f"Final Player 1 Win Rate: "
+        f"Final Win Rate: "
         f"{player1_wins / num_games:.2%}"
     )
-    print(f"Learned State-Action Pairs: {len(agent.Q)}")
+
+    print(
+        f"Training Time: {elapsed_time:.2f} seconds"
+    )
+
+    print(
+        f"Training Speed: "
+        f"{num_games / elapsed_time:.2f} games/second"
+    )
+
+    if convergence_episode is not None:
+        print(
+            f"Convergence Episode: "
+            f"{convergence_episode}"
+        )
+    else:
+        print("Convergence not detected.")
+
+    print(
+        f"Learned State-Action Pairs: {len(agent.Q)}"
+    )
+
+    # Plot convergence
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8))
+
+    axes[0].plot(
+        episodes,
+        win_rates,
+        label="Win Rate"
+    )
+
+    if convergence_episode is not None:
+        axes[0].axvline(
+            convergence_episode,
+            linestyle="--",
+            color="red",
+            label="Convergence"
+        )
+
+    axes[0].set_xlabel("Training Episodes")
+    axes[0].set_ylabel("Win Rate")
+    axes[0].set_title("Monte Carlo UNO Win Rate Convergence")
+    axes[0].legend()
+    axes[0].grid(True)
+
+    axes[1].plot(
+        episodes,
+        q_changes,
+        label="Average Q-value Change"
+    )
+
+    axes[1].set_xlabel("Training Episodes")
+    axes[1].set_ylabel("Average Absolute Q Change")
+    axes[1].set_title("Monte Carlo Q-value Convergence")
+    axes[1].legend()
+    axes[1].grid(True)
+
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == "__main__":
